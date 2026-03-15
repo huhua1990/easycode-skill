@@ -102,6 +102,29 @@
           ],
           "description": "Optional formatter command(s) executed in project_root after generation, e.g. './gradlew spotlessApply'"
         },
+        "type_mapping": {
+          "type": "object",
+          "description": "Optional JDBC to Java type preference overrides",
+          "properties": {
+            "number_default": {
+              "type": "string",
+              "enum": [
+                "Long",
+                "BigDecimal"
+              ],
+              "default": "Long"
+            },
+            "time_default": {
+              "type": "string",
+              "enum": [
+                "Date",
+                "LocalDateTime"
+              ],
+              "default": "Date"
+            }
+          },
+          "additionalProperties": false
+        },
         "table_columns": {
           "type": "object",
           "description": "Optional per-table column metadata for full Velocity rendering",

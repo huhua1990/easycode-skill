@@ -51,9 +51,13 @@ Use this skill when users ask for:
   - Convert `base_package` (for example `com.app.admin`) to `src/main/java/com/app/admin`.
   - Append template-level relative package (for example `entity`, `mapper`, `service`, `controller`).
 - Template groups:
-  - `MyBatisPlus` -> `EasyCodeConfig-mybatispuls.json`
-  - `Custom-V2` -> `EasyCodeConfig-V2.json`
-  - `Custom-V3` -> `EasyCodeConfig-V3.json`
+  - `MyBatisPlus` -> `configs/EasyCodeConfig-mybatispuls.json` (fallback project root file)
+  - `Custom-V2` -> `configs/EasyCodeConfig-V2.json` (fallback project root file)
+  - `Custom-V3` -> `configs/EasyCodeConfig-V3.json` (fallback project root file)
+- JDBC drivers:
+  - Preferred lookup is `drivers/drivers-paths.json`.
+  - Skill-local jars under `drivers/<db>/` are supported.
+  - If still missing, pass `db_connection.driver_jar`.
 - Safety:
   - Always show a pre-write file list.
   - If file exists, mark as `overwrite_candidate` and ask for confirmation before replacing.
@@ -64,6 +68,11 @@ Use this skill when users ask for:
 - `execute` writes rendered output (not scaffold), and `plan` can include rendered content with `--include-content`.
 - If `table_columns` is missing, script auto-fetches metadata through JDBC.
 - When no JDBC driver is found locally, pass `db_connection.driver_jar` (and optional `db_connection.driver_class`) or provide `table_columns`.
+- Default JDBC type preferences:
+  - Number -> `Long`
+  - Time/Date/Timestamp -> `Date`
+  - Override via `generation_config.type_mapping` when needed.
+  - Optional interactive prompt: add `--interactive-type-mapping` to `plan/execute` when `type_mapping` is not specified.
 - Optional project formatter:
   - set `generation_config.project_format_command` to custom command(s), or
   - use `--run-project-format` and let script auto-detect `gradlew/mvnw` format tasks.

@@ -14,6 +14,8 @@ public class JdbcMetadataBridge {
         String pass = req(a, "pass");
         String tablesRaw = req(a, "tables");
         String driverClass = a.getOrDefault("driver-class", defaultDriverClass(dbType));
+        String numberType = a.getOrDefault("number-type", "Long");
+        String timeType = a.getOrDefault("time-type", "Date");
 
         if (driverClass != null && !driverClass.isBlank()) {
             Class.forName(driverClass);
@@ -33,7 +35,7 @@ public class JdbcMetadataBridge {
             String schema = detectSchema(conn, dbType, user);
             for (String table : tables) {
                 String[] ref = normalizeQualifiedTable(schema, table);
-                result.put(table, loadColumns(conn, meta, ref[0], ref[1]));
+                result.put(table, loadColumns(conn, meta, ref[0], ref[1], numberType, timeType));
                 tableComments.put(table, loadTableComment(conn, meta, ref[0], ref[1]));
             }
         }
@@ -62,7 +64,7 @@ public class JdbcMetadataBridge {
         return null;
     }
 
-    private static List<Map<String, Object>> loadColumns(Connection conn, DatabaseMetaData meta, String schema, String table) throws SQLException {
+    private static List<Map<String, Object>> loadColumns(Connection conn, DatabaseMetaData meta, String schema, String table, String numberType, String timeType) throws SQLException {
         String effectiveSchema = schema;
         String effectiveTable = table;
         if (effectiveSchema != null && !effectiveSchema.isBlank()) {
@@ -89,17 +91,19 @@ public class JdbcMetadataBridge {
             while (rs.next()) {
                 String colName = nvl(rs.getString("COLUMN_NAME"));
                 int dataType = rs.getInt("DATA_TYPE");
+                int scale = rs.getInt("DECIMAL_DIGITS");
                 String typeName = nvl(rs.getString("TYPE_NAME"));
                 String comment = nvl(rs.getString("REMARKS"));
                 if (comment.isBlank()) {
                     comment = nvl(commentByColumn.get(colName.toUpperCase(Locale.ROOT)));
                 }
+                String javaType = javaTypeOf(dataType, scale, numberType, timeType);
 
                 Map<String, Object> c = new LinkedHashMap<>();
                 c.put("name", colName);
                 c.put("comment", comment);
-                c.put("type", javaTypeOf(dataType));
-                c.put("short_type", shortTypeOf(javaTypeOf(dataType)));
+                c.put("type", javaType);
+                c.put("short_type", shortTypeOf(javaType));
                 c.put("sql_type", typeName);
                 c.put("is_pk", pks.contains(colName.toLowerCase(Locale.ROOT)));
                 cols.add(c);
@@ -180,7 +184,9 @@ public class JdbcMetadataBridge {
         return map;
     }
 
-    private static String javaTypeOf(int jdbcType) {
+    private static String javaTypeOf(int jdbcType, int scale, String numberType, String timeType) {
+        String numberPref = numberType == null ? "Long" : numberType.trim();
+        String timePref = timeType == null ? "Date" : timeType.trim();
         switch (jdbcType) {
             case Types.BIT:
             case Types.BOOLEAN:
@@ -200,14 +206,27 @@ public class JdbcMetadataBridge {
                 return "java.lang.Double";
             case Types.NUMERIC:
             case Types.DECIMAL:
-                return "java.math.BigDecimal";
+                if ("BigDecimal".equalsIgnoreCase(numberPref)) {
+                    return "java.math.BigDecimal";
+                }
+                if (scale > 0) {
+                    return "java.math.BigDecimal";
+                }
+                return "java.lang.Long";
             case Types.DATE:
-                return "java.time.LocalDate";
             case Types.TIME:
-                return "java.time.LocalTime";
             case Types.TIMESTAMP:
             case Types.TIMESTAMP_WITH_TIMEZONE:
-                return "java.time.LocalDateTime";
+                if ("LocalDateTime".equalsIgnoreCase(timePref)) {
+                    if (jdbcType == Types.DATE) {
+                        return "java.time.LocalDate";
+                    }
+                    if (jdbcType == Types.TIME) {
+                        return "java.time.LocalTime";
+                    }
+                    return "java.time.LocalDateTime";
+                }
+                return "java.util.Date";
             case Types.CHAR:
             case Types.VARCHAR:
             case Types.LONGVARCHAR:

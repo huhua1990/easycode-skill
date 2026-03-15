@@ -26,6 +26,9 @@ PKG_PATTERN = re.compile(r"#setPackageSuffix\(\s*\"([^\"]+)\"\s*\)")
 SUFFIX_PATTERN = re.compile(r"#setTableSuffix\(\s*\"([^\"]*)\"\s*\)")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+SKILL_ROOT = SCRIPT_DIR.parent
+CONFIG_DIR = SKILL_ROOT / "configs"
+DRIVER_PATHS_FILE = SKILL_ROOT / "drivers" / "drivers-paths.json"
 JAVA_SRC_DIR = SCRIPT_DIR / "java"
 JAVA_BUILD_DIR = Path(tempfile.gettempdir()) / "easycode-skill-java-build"
 JAVA_RENDER_MAIN_CLASS = "VelocityRenderBridge"
@@ -132,7 +135,7 @@ def _short_type(java_type: str) -> str:
 
 
 def _load_template_elements(template_group: str) -> List[Dict[str, Any]]:
-    cfg_path = Path(SUPPORTED_GROUPS[template_group])
+    cfg_path = _resolve_template_config_path(template_group)
     if not cfg_path.exists():
         raise SystemExit(f"Template config file not found: {cfg_path}")
 
@@ -148,6 +151,18 @@ def _load_template_elements(template_group: str) -> List[Dict[str, Any]]:
     if not elements:
         raise SystemExit(f"Template group has no elements in {cfg_path}")
     return elements
+
+
+def _resolve_template_config_path(template_group: str) -> Path:
+    filename = SUPPORTED_GROUPS[template_group]
+    candidates = [
+        CONFIG_DIR / filename,
+        Path(filename),
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    raise SystemExit(f"Template config file not found for {template_group}: {filename}")
 
 
 def _load_global_macros() -> Dict[str, str]:
@@ -216,6 +231,21 @@ def _find_jar(pattern: str) -> str:
     return files[-1]
 
 
+def _load_driver_paths_config() -> Dict[str, Any]:
+    if not DRIVER_PATHS_FILE.exists():
+        return {}
+    try:
+        with DRIVER_PATHS_FILE.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _expand_pattern(pattern: str) -> str:
+    home = str(Path.home())
+    return pattern.replace("{home}", home).replace("{skill_root}", str(SKILL_ROOT))
+
+
 def _java_classpath_entries(extra_jars: List[str] = None) -> List[str]:
     jars = [
         _find_jar("~/.m2/repository/org/apache/velocity/velocity/1.7/velocity-1.7.jar"),
@@ -248,7 +278,7 @@ def _ensure_java_bridge_compiled(extra_jars: List[str] = None) -> str:
 
     marker = JAVA_BUILD_DIR / ".compiled"
     latest_src_mtime = max(Path(s).stat().st_mtime for s in java_sources)
-    needs_compile = not marker.exists() or latest_src_mtime > marker.stat().st_mtime
+    needs_compile = not marker.exists() or latest_src_mtime >= marker.stat().st_mtime
     if needs_compile:
         cmd = [
             "javac",
@@ -313,6 +343,19 @@ def _render_with_velocity(template_code: str, context_payload: Dict[str, Any]) -
 
 
 def _driver_candidates(db_type: str) -> List[Tuple[str, str]]:
+    cfg = _load_driver_paths_config()
+    item = cfg.get(db_type, {}) if isinstance(cfg, dict) else {}
+    patterns = item.get("patterns", []) if isinstance(item, dict) else []
+    driver_class = item.get("driver_class", _default_driver_class(db_type)) if isinstance(item, dict) else _default_driver_class(db_type)
+    dynamic: List[Tuple[str, str]] = []
+    for p in patterns:
+        if isinstance(p, str) and p.strip():
+            jar = _find_jar(_expand_pattern(p.strip()))
+            if jar:
+                dynamic.append((driver_class, jar))
+    if dynamic:
+        return dynamic
+
     if db_type == "mysql":
         return [
             ("com.mysql.cj.jdbc.Driver", _find_jar("~/.m2/repository/com/mysql/mysql-connector-j/*/mysql-connector-j-*.jar")),
@@ -382,12 +425,18 @@ def _fetch_table_columns_via_jdbc(spec: dict) -> Tuple[Dict[str, List[Dict[str, 
             "Provide db_connection.driver_jar (and optionally driver_class), or pass generation_config.table_columns."
         )
 
+    type_mapping = gen.get("type_mapping", {}) if isinstance(gen.get("type_mapping"), dict) else {}
+    number_type = str(type_mapping.get("number_default", "Long"))
+    time_type = str(type_mapping.get("time_default", "Date"))
+
     args = [
         "--db-type", db_type,
         "--url", dbc["url"],
         "--user", dbc["user"],
         "--pass", dbc["pass"],
         "--tables", ",".join(table_names),
+        "--number-type", number_type,
+        "--time-type", time_type,
     ]
     if driver_class:
         args.extend(["--driver-class", driver_class])
@@ -454,7 +503,11 @@ def cmd_spec_template(args: argparse.Namespace) -> int:
             "base_package": args.base_package or "com.example.project.modules",
             "template_group": args.template_group or "MyBatisPlus",
             "project_root": args.project_root or ".",
-            "output_root": "src/main/java"
+            "output_root": "src/main/java",
+            "type_mapping": {
+                "number_default": "Long",
+                "time_default": "Date"
+            }
         }
     }
     print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -622,7 +675,7 @@ def build_plan(spec: dict, include_content: bool = False) -> dict:
 
     return {
         "template_group": gen["template_group"],
-        "template_config": SUPPORTED_GROUPS[gen["template_group"]],
+        "template_config": str(_resolve_template_config_path(gen["template_group"])),
         "base_output": str(project_root / output_root / package_dir),
         "file_count": len(files),
         "files": files,
@@ -822,6 +875,29 @@ def _format_xml_content(content: str) -> str:
     return formatted
 
 
+def _prompt_type_mapping_if_needed(gen: Dict[str, Any], interactive: bool) -> None:
+    if not interactive:
+        return
+    if "type_mapping" in gen and isinstance(gen["type_mapping"], dict):
+        number_default = gen["type_mapping"].get("number_default")
+        time_default = gen["type_mapping"].get("time_default")
+        if number_default in {"Long", "BigDecimal"} and time_default in {"Date", "LocalDateTime"}:
+            return
+
+    if not sys.stdin.isatty():
+        return
+
+    print("Type mapping not specified. Choose defaults (press Enter for recommended):")
+    num = input("1) Number -> Long (recommended)  2) Number -> BigDecimal  [1/2]: ").strip()
+    tm = input("1) Time -> Date (recommended)    2) Time -> LocalDateTime [1/2]: ").strip()
+    number_type = "BigDecimal" if num == "2" else "Long"
+    time_type = "LocalDateTime" if tm == "2" else "Date"
+    gen["type_mapping"] = {
+        "number_default": number_type,
+        "time_default": time_type,
+    }
+
+
 def cmd_state(args: argparse.Namespace) -> int:
     state = _load_state()
     if args.show:
@@ -850,6 +926,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     state = _load_state()
     spec = _parse_spec(args.spec)
     merged = merge_with_state(spec, state)
+    _prompt_type_mapping_if_needed(merged["generation_config"], args.interactive_type_mapping)
     plan = build_plan(merged, include_content=args.include_content)
     print(json.dumps(plan, ensure_ascii=False, indent=2))
     return 0
@@ -859,6 +936,7 @@ def cmd_execute(args: argparse.Namespace) -> int:
     state = _load_state()
     spec = _parse_spec(args.spec)
     merged = merge_with_state(spec, state)
+    _prompt_type_mapping_if_needed(merged["generation_config"], args.interactive_type_mapping)
     plan = build_plan(merged, include_content=True)
 
     result = _execute_write(plan, overwrite=args.overwrite)
@@ -898,12 +976,14 @@ def make_parser() -> argparse.ArgumentParser:
     plan = sub.add_parser("plan", help="preview output file plan")
     plan.add_argument("--spec", type=str, required=True, help="JSON payload")
     plan.add_argument("--include-content", action="store_true", help="include rendered content in output")
+    plan.add_argument("--interactive-type-mapping", action="store_true", help="prompt for type mapping when not specified")
     plan.set_defaults(func=cmd_plan)
 
     execute = sub.add_parser("execute", help="write rendered files")
     execute.add_argument("--spec", type=str, required=True, help="JSON payload")
     execute.add_argument("--overwrite", action="store_true", help="overwrite existing files")
     execute.add_argument("--run-project-format", action="store_true", help="run project formatter after file generation")
+    execute.add_argument("--interactive-type-mapping", action="store_true", help="prompt for type mapping when not specified")
     execute.set_defaults(func=cmd_execute)
 
     check_driver = sub.add_parser("check-driver", help="check local JDBC driver for db type")
