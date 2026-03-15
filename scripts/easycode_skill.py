@@ -165,18 +165,28 @@ def _resolve_template_config_path(template_group: str) -> Path:
     raise SystemExit(f"Template config file not found for {template_group}: {filename}")
 
 
-def _load_global_macros() -> Dict[str, str]:
-    base = Path("src/main/resources/globalConfig/Default")
-    names = ["init", "define", "autoImport", "mybatisSupport"]
+def _load_global_macros(template_group: str) -> Dict[str, str]:
+    cfg_path = _resolve_template_config_path(template_group)
+    if not cfg_path.exists():
+        raise SystemExit(f"Template config file not found: {cfg_path}")
+
+    with cfg_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    global_config = data.get("globalConfig", {})
+    if not global_config:
+        return {}
+
+    first_group = next(iter(global_config.values()))
+    elements = first_group.get("elementList", [])
+    
     macros = {}
-    for name in names:
-        vm = base / f"{name}.vm"
-        if vm.exists():
-            content = vm.read_text(encoding="utf-8")
-        else:
-            content = ""
-        macros[name] = content
-        macros[f"{name}.vm"] = content
+    for element in elements:
+        name = element.get("name", "")
+        value = element.get("value", "")
+        if name:
+            macros[name] = value
+            macros[f"{name}.vm"] = value
     return macros
 
 
@@ -582,7 +592,7 @@ def _render_entries(spec: dict, include_content: bool) -> Tuple[List[Dict[str, A
     author = gen["author"]
 
     elements = _load_template_elements(template_group)
-    macros = _load_global_macros()
+    macros = _load_global_macros(template_group)
 
     warnings: List[str] = []
     user_columns = gen.get("table_columns", {})
