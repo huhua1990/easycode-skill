@@ -44,6 +44,7 @@ Use this skill when users ask for:
 8. Helper commands:
    - `python3 scripts/easycode_skill.py check-driver --db-type mysql`
    - `python3 scripts/easycode_skill.py spec-template --db-type mysql --tables user,order`
+   - `python3 scripts/easycode_skill.py interactive` (首次 1~9 步引导，后续仅输入表名)
 
 ## Generation Rules
 
@@ -83,6 +84,7 @@ Persist these keys after successful run:
 - `db_type`, `url`, `user`
 - `author`, `base_package`, `template_group`
 - optional `project_root`, `output_root`
+- interactive mode also persists `pass`, `driver_jar`, `driver_class`, `type_mapping`, `project_format_command` for next-run defaults.
 
 Do not store plaintext password in state. If password must be cached, store encrypted value from host secret manager.
 

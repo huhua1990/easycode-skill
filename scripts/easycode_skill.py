@@ -898,6 +898,150 @@ def _prompt_type_mapping_if_needed(gen: Dict[str, Any], interactive: bool) -> No
     }
 
 
+def _has_reusable_history(state: Dict[str, Any]) -> bool:
+    db = state.get("db_connection", {}) if isinstance(state, dict) else {}
+    gen = state.get("generation_config", {}) if isinstance(state, dict) else {}
+    required_db = ["db_type", "url", "user", "pass"]
+    required_gen = ["author", "base_package", "template_group", "project_root", "output_root"]
+    return all(db.get(k) for k in required_db) and all(gen.get(k) for k in required_gen)
+
+
+def _input_non_empty(prompt: str) -> str:
+    while True:
+        v = input(prompt).strip()
+        if v:
+            return v
+        print("输入不能为空，请重试。")
+
+
+def _prompt_default_or_input(label: str, default_value: str) -> str:
+    default_text = default_value if default_value else "<无默认>"
+    print(f"{label}")
+    print(f"1) 使用默认（默认值：{default_text}，回车默认）")
+    print("2) 手动输入")
+    choice = input("请选择 [1/2] (回车默认1): ").strip()
+    if choice in {"", "1"} and default_value:
+        return default_value
+    return _input_non_empty("请输入值: ")
+
+
+def _prompt_select_option(label: str, options: List[str], default_value: str) -> str:
+    print(label)
+    for i, opt in enumerate(options, start=1):
+        print(f"{i}) {opt}")
+    default_idx = options.index(default_value) + 1 if default_value in options else 1
+    pick = input(f"请选择 [1-{len(options)}] (回车默认{default_idx}): ").strip()
+    if not pick:
+        return options[default_idx - 1]
+    if pick.isdigit():
+        idx = int(pick)
+        if 1 <= idx <= len(options):
+            return options[idx - 1]
+    if pick in options:
+        return pick
+    print("输入无效，使用默认。")
+    return options[default_idx - 1]
+
+
+def _parse_table_names(raw: str) -> List[str]:
+    tables = [x.strip() for x in raw.split(",") if x.strip()]
+    return tables
+
+
+def _build_spec_interactively(state: Dict[str, Any]) -> Dict[str, Any]:
+    if not sys.stdin.isatty():
+        raise SystemExit("interactive mode requires a TTY")
+
+    if _has_reusable_history(state):
+        print("检测到历史配置，按要求仅需输入表名，其余使用上次配置。")
+        raw_tables = _input_non_empty("1) 表名（可多个，逗号分隔）: ")
+        tables = _parse_table_names(raw_tables)
+        if not tables:
+            raise SystemExit("至少需要一个表名")
+        spec = {
+            "db_connection": dict(state.get("db_connection", {})),
+            "generation_config": dict(state.get("generation_config", {})),
+        }
+        spec["generation_config"]["table_names"] = tables
+        return spec
+
+    print("未检测到完整历史配置，进入首次引导（1~9 步）。")
+    # 1) 表名
+    raw_tables = _input_non_empty("1) 表名（可多个，逗号分隔）: ")
+    tables = _parse_table_names(raw_tables)
+    if not tables:
+        raise SystemExit("至少需要一个表名")
+
+    # 2) 模板
+    template_group = _prompt_select_option(
+        "2) 选择生成模板",
+        ["MyBatisPlus", "Custom-V2", "Custom-V3"],
+        "Custom-V3",
+    )
+
+    # 3) 作者
+    default_author = os.environ.get("USER", "DeveloperName")
+    author = _prompt_default_or_input("3) 作者名", default_author)
+
+    # 4) 数据库信息
+    db_type = _prompt_select_option("4.1) 数据库类型", ["mysql", "oracle", "postgresql", "sqlserver"], "oracle")
+    url = _prompt_default_or_input("4.2) 数据库 URL", _default_jdbc_url(db_type))
+    user = _prompt_default_or_input("4.3) 数据库用户名", "root")
+    passw = _input_non_empty("4.4) 数据库密码（必填）: ")
+
+    # 5) 驱动地址
+    detected = _driver_candidates(db_type)
+    default_driver_jar = detected[0][1] if detected and detected[0][1] else ""
+    default_driver_class = detected[0][0] if detected and detected[0][0] else _default_driver_class(db_type)
+    driver_jar = _prompt_default_or_input("5) 数据库驱动地址（JAR）", default_driver_jar)
+    driver_class = _prompt_default_or_input("5) 数据库驱动类", default_driver_class)
+
+    # 6) 代码包目录
+    base_package = _prompt_default_or_input("6) 代码包目录(base_package)", "com.example.project.modules")
+
+    # 7) 字段类型映射
+    number_default = _prompt_select_option("7.1) Number 类型映射", ["Long", "BigDecimal"], "Long")
+    time_default = _prompt_select_option("7.2) 时间类型映射", ["Date", "LocalDateTime"], "Date")
+
+    # 8) 格式化要求
+    run_format = _prompt_select_option("8) 是否执行项目格式化", ["否", "是"], "否") == "是"
+    project_format_command = ""
+    if run_format:
+        project_format_command = input("8) 可选：自定义格式化命令（回车走自动探测）: ").strip()
+
+    # 9) 输出地址
+    project_root = _prompt_default_or_input("9) 文件输出地址(project_root)", str(Path.cwd()))
+    output_root = _prompt_default_or_input("9) 代码输出子目录(output_root)", "src/main/java")
+
+    gen: Dict[str, Any] = {
+        "table_names": tables,
+        "author": author,
+        "base_package": base_package,
+        "template_group": template_group,
+        "project_root": project_root,
+        "output_root": output_root,
+        "type_mapping": {
+            "number_default": number_default,
+            "time_default": time_default,
+        },
+    }
+    if project_format_command:
+        gen["project_format_command"] = project_format_command
+    gen["_run_project_format"] = run_format
+
+    return {
+        "db_connection": {
+            "db_type": db_type,
+            "url": url,
+            "user": user,
+            "pass": passw,
+            "driver_jar": driver_jar,
+            "driver_class": driver_class,
+        },
+        "generation_config": gen,
+    }
+
+
 def cmd_state(args: argparse.Namespace) -> int:
     state = _load_state()
     if args.show:
@@ -910,9 +1054,6 @@ def cmd_state(args: argparse.Namespace) -> int:
 
         spec = _parse_spec(args.spec)
         merged = merge_with_state(spec, state)
-
-        if "pass" in merged.get("db_connection", {}):
-            merged["db_connection"].pop("pass", None)
 
         merged["updated_at"] = _now_iso()
         _save_state(merged)
@@ -963,6 +1104,53 @@ def cmd_execute(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_interactive(args: argparse.Namespace) -> int:
+    state = _load_state()
+    spec = _build_spec_interactively(state)
+    merged = merge_with_state(spec, state)
+
+    plan = build_plan(merged, include_content=False)
+    print(json.dumps({
+        "step": "plan",
+        "file_count": plan["file_count"],
+        "base_output": plan["base_output"],
+        "warnings": plan.get("warnings", []),
+    }, ensure_ascii=False, indent=2))
+
+    overwrite = args.overwrite
+    if sys.stdin.isatty():
+        ov = input("文件已存在时是否覆盖？[y/N]: ").strip().lower()
+        if ov == "y":
+            overwrite = True
+        go = input("确认执行生成？[Y/n]: ").strip().lower()
+        if go == "n":
+            print("已取消执行。")
+            return 0
+
+    plan_with_content = build_plan(merged, include_content=True)
+    result = _execute_write(plan_with_content, overwrite=overwrite)
+
+    format_result = {
+        "formatter_run": False,
+        "formatter_success": False,
+        "formatter_command": "",
+        "formatter_message": "Skipped.",
+    }
+    if spec["generation_config"].get("_run_project_format", False):
+        format_result = _run_project_formatter(merged["generation_config"])
+
+    merged["updated_at"] = _now_iso()
+    _save_state(merged)
+
+    print(json.dumps({
+        "step": "execute",
+        "saved_state": str(STATE_FILE),
+        **result,
+        **format_result,
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="EasyCode skill helper")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1001,6 +1189,10 @@ def make_parser() -> argparse.ArgumentParser:
     spec_template.add_argument("--template-group", type=str, help="MyBatisPlus/Custom-V2/Custom-V3")
     spec_template.add_argument("--project-root", type=str, help="project root path")
     spec_template.set_defaults(func=cmd_spec_template)
+
+    interactive = sub.add_parser("interactive", help="interactive wizard; first time asks 1~9 steps, later only table names")
+    interactive.add_argument("--overwrite", action="store_true", help="overwrite existing files by default in interactive mode")
+    interactive.set_defaults(func=cmd_interactive)
 
     return parser
 
