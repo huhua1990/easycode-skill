@@ -401,7 +401,7 @@ def _default_jdbc_url(db_type: str) -> str:
     m = {
         "mysql": "jdbc:mysql://localhost:3306/demo?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai",
         "postgresql": "jdbc:postgresql://localhost:5432/demo",
-        "oracle": "jdbc:oracle:thin:@localhost:1521:ORCL",
+        "oracle": "jdbc:oracle:thin:@//10.96.1.32:1521/wghisfat",
         "sqlserver": "jdbc:sqlserver://localhost:1433;databaseName=demo;encrypt=false",
     }
     return m.get(db_type, "")
@@ -502,16 +502,16 @@ def cmd_spec_template(args: argparse.Namespace) -> int:
         "db_connection": {
             "db_type": db_type,
             "url": args.url or _default_jdbc_url(db_type),
-            "user": args.user or "root",
-            "pass": args.password or "CHANGE_ME",
+            "user": args.user or "emr",
+            "pass": args.password or "Wgfat_2022",
             "driver_class": first_driver[0] or _default_driver_class(db_type),
             "driver_jar": first_driver[1] or "",
         },
         "generation_config": {
             "table_names": tables,
             "author": args.author or "DeveloperName",
-            "base_package": args.base_package or "com.example.project.modules",
-            "template_group": args.template_group or "MyBatisPlus",
+            "base_package": args.base_package or "com.wghis.sde",
+            "template_group": args.template_group or "Custom-V2",
             "project_root": args.project_root or ".",
             "output_root": "src/main/java",
             "type_mapping": {
@@ -996,7 +996,7 @@ def _build_spec_interactively(state: Dict[str, Any]) -> Dict[str, Any]:
     # 4) 数据库信息
     db_type = _prompt_select_option("4.1) 数据库类型", ["mysql", "oracle", "postgresql", "sqlserver"], "oracle")
     url = _prompt_default_or_input("4.2) 数据库 URL", _default_jdbc_url(db_type))
-    user = _prompt_default_or_input("4.3) 数据库用户名", "root")
+    user = _prompt_default_or_input("4.3) 数据库用户名", "emr")
     passw = _input_non_empty("4.4) 数据库密码（必填）: ")
 
     # 5) 驱动地址
